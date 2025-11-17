@@ -148,16 +148,18 @@ class Learner(BaseLearner):
         
         if self._cur_task == 0:
             # 初始任务训练
-            optimizer = optim.SGD(
-                self._network.parameters(),
-                momentum=0.9,
-                lr=self.args["init_lr"],
-            )
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer=optimizer,
-                T_max=self.args["init_epoch"],
-                eta_min=0.00001  # 最小学习率
-            )
+            # optimizer = optim.SGD(
+            #     self._network.parameters(),
+            #     momentum=0.9,
+            #     lr=self.args["init_lr"],
+            # )
+            optimizer = self.get_optimizer()
+            # scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            #     optimizer=optimizer,
+            #     T_max=self.args["init_epoch"],
+            #     eta_min=0.00001  # 最小学习率
+            # )
+            scheduler = self.get_scheduler(optimizer)
             self._init_train(train_loader, test_loader, optimizer, scheduler)
         else:
             # 增量任务训练
@@ -189,16 +191,18 @@ class Learner(BaseLearner):
             
             self._network.to(self._device)
 
-            optimizer = optim.SGD(
-                self._network.parameters(),
-                lr=self.args["lrate"],
-                momentum=0.9,
-            )
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer=optimizer,
-                T_max=self.args["epochs"],
-                eta_min=0.00001  # 最小学习率
-            )
+            # optimizer = optim.SGD(
+            #     self._network.parameters(),
+            #     lr=self.args["lrate"],
+            #     momentum=0.9,
+            # )
+            # scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            #     optimizer=optimizer,
+            #     T_max=self.args["epochs"],
+            #     eta_min=0.00001  # 最小学习率
+            # )
+            optimizer = self.get_optimizer()
+            scheduler = self.get_scheduler(optimizer)
             
             # 训练当前任务
             self._update_representation(train_loader, test_loader, optimizer, scheduler)
@@ -220,25 +224,28 @@ class Learner(BaseLearner):
         #     self._update_old_tasks_global_spectrum()
         
         # 训练结束后，合并之前任务的适配器增量权重
-        # if len(self.adapters_history) > 0:
-        #     # 获取之前所有任务的适配器名称
-        #     previous_adapters = self.adapters_history[:]
+        if self.args['merge_adapters'] == True:
+            # 获取之前所有任务的适配器名称
+            previous_adapters = self.adapters_history[:]
                 
-        #     # 合并策略
-        #     strategy = self.args.get('merge_strategy', 'max')
+            # 合并策略
+            strategy = self.args.get('merge_strategy', 'max')
                 
-        #     # 应用合并
-        #     if len(self._multiple_gpus) > 1:
-        #         self._network.module.backbone.merge_adapters(previous_adapters, strategy)
-        #     else:
-        #         self._network.backbone.merge_adapters(previous_adapters, strategy)
+            # 应用合并
+            if len(self._multiple_gpus) > 1:
+                self._network.module.backbone.merge_adapters(previous_adapters, strategy)
+            else:
+                self._network.backbone.merge_adapters(previous_adapters, strategy)
                 
-        #     # 合并后在测试集上进行测试
-        #     test_acc = self._compute_accuracy(self._network, test_loader)
-        #     info = "Task {}, After merge adapters => Test_accy {:.2f}".format(
-        #         self._cur_task, test_acc
-        #     )
-        #     logging.info(info)
+            # 合并后在测试集上进行测试
+            test_acc = self._compute_accuracy(self._network, test_loader)
+            info = "Task {}, After merge adapters => Test_accy {:.2f}".format(
+                self._cur_task, test_acc
+            )
+            logging.info(info)
+        else:
+            # 不合并适配器增量权重
+            pass
         
         self._cur_task += 1
 
@@ -248,8 +255,8 @@ class Learner(BaseLearner):
             optimizer = optim.SGD(
                 filter(lambda p: p.requires_grad, self._network.parameters()),
                 momentum=0.9,
-                lr=self.init_lr,
-                weight_decay=self.weight_decay
+                lr=self.args['init_lr'],
+                weight_decay=self.args['weight_decay']
             )
         elif self.args['optimizer'] == 'adam':
             optimizer = optim.Adam(
@@ -260,8 +267,8 @@ class Learner(BaseLearner):
         elif self.args['optimizer'] == 'adamw':
             optimizer = optim.AdamW(
                 filter(lambda p: p.requires_grad, self._network.parameters()),
-                lr=self.init_lr,
-                weight_decay=self.weight_decay
+                lr=self.args['init_lr'],
+                weight_decay=self.args['weight_decay']
             )
         return optimizer
 
@@ -270,7 +277,7 @@ class Learner(BaseLearner):
         if self.args["scheduler"] == 'cosine':
             scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 optimizer=optimizer,
-                T_max=self.args['tuned_epoch'],
+                T_max=self.args['epochs'],
                 eta_min=self.args['min_lr']
             )
         elif self.args["scheduler"] == 'steplr':
@@ -298,12 +305,12 @@ class Learner(BaseLearner):
                 
                 # 添加L2正则化项
                 l2_reg = 0.0
-                l2_lambda = 1e-5  # 正则化系数
+                l2_lambda = 1e-3  # 正则化系数
                 for param in self._network.parameters():
                     if param.requires_grad:
                         l2_reg += torch.norm(param, 2)
                 
-                loss = loss_clf + l2_lambda * l2_reg
+                loss = loss_clf # + l2_lambda * l2_reg
                 
                 optimizer.zero_grad()
                 loss.backward()
@@ -354,13 +361,13 @@ class Learner(BaseLearner):
                 
                 # 添加L2正则化项
                 l2_reg = 0.0
-                l2_lambda = 1e-4  # 正则化系数
+                l2_lambda = 1e-3  # 正则化系数
                 for param in self._network.parameters():
                     if param.requires_grad:
                         l2_reg += torch.norm(param, 2)
                 
                 # 傅里叶微调没有正交损失，但添加L2正则
-                loss = loss_clf + l2_lambda * l2_reg
+                loss = loss_clf # + l2_lambda * l2_reg
 
                 optimizer.zero_grad()
                 loss.backward()
